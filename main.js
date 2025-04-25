@@ -11,6 +11,19 @@ document.addEventListener('DOMContentLoaded', function() {
 
     const ctx = canvas.getContext('2d');
     
+    // === 新增 WebSocket 連線，接收 Arduino 數值 ===
+    let ws;
+    let arduinoValue = 512; // 初始值（0~1023）
+    try {
+        ws = new WebSocket('ws://localhost:8080');
+        ws.onmessage = function(event) {
+            const v = parseInt(event.data);
+            if (!isNaN(v)) arduinoValue = v;
+        };
+        ws.onopen = function() { console.log('WebSocket 已連線'); };
+        ws.onerror = function() { console.log('WebSocket 連線失敗'); };
+    } catch (e) { console.log('WebSocket 不支援'); }
+
     // 設定基本參數，使用隨機值
     let verticalCenter = window.innerHeight * (0.3 + Math.random() * 0.4); // 隨機位置在畫面30%-70%之間
     let baseAmplitude = (97.5 + Math.random() * 39); // 增加 30%（從 75-105 增加到 97.5-136.5）
@@ -61,24 +74,21 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // 使用平滑曲線繪製波浪
-    function drawSmoothWave(points, color, width, shadow) {
+    function drawSmoothWave(points) {
         if (points.length < 2) return;
+        
         const startX = -canvas.width * extensionFactor;
-        ctx.save();
+        
         ctx.beginPath();
         ctx.moveTo(startX, points[0]);
+        
+        // 使用平滑的曲線連接點
         for (let i = 1; i < points.length; i++) {
             const x = startX + i;
             ctx.lineTo(x, points[i]);
         }
-        ctx.strokeStyle = color || 'rgba(0, 120, 255, 0.85)';
-        ctx.lineWidth = width || 2.5;
-        if (shadow) {
-            ctx.shadowColor = shadow.color;
-            ctx.shadowBlur = shadow.blur;
-        }
+        
         ctx.stroke();
-        ctx.restore();
     }
     
     // 自然平滑波形函數 - 加入水平偏移
@@ -100,38 +110,51 @@ document.addEventListener('DOMContentLoaded', function() {
     function drawWave() {
         // 增加時間
         time += 0.01;
+
+        // 依據 arduinoValue 動態調整振幅、頻率、速度等參數
+        baseAmplitude = 50 + (arduinoValue / 1023) * 150; // 振幅 50~200
+        waveParams.frequency = 0.001 + (arduinoValue / 1023) * 0.004; // 頻率 0.001~0.005
+        waveParams.horizontalSpeed = 0.5 + (arduinoValue / 1023) * 2; // 水平速度 0.5~2.5
+
+        // 增加水平偏移量，實現從右到左的移動
         horizontalOffset += waveParams.horizontalSpeed;
+
+        // 計算垂直位置的緩慢自然變化 - 使用新的飄浮參數
         const verticalShift = Math.sin(time * waveParams.floatSpeed) * waveParams.floatAmplitude;
+
         ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // 創建當前幀的波形點 - 計算範圍擴展到畫面外
         const totalWidth = Math.ceil(canvas.width * (1 + extensionFactor * 2));
-        // 美化：多重疊加、漸層、陰影
-        const colorMain = ctx.createLinearGradient(0, 0, canvas.width, 0);
-        colorMain.addColorStop(0, '#00c3ff');
-        colorMain.addColorStop(0.5, '#ffff1c');
-        colorMain.addColorStop(1, '#ff007a');
-        const colorSub1 = 'rgba(0, 200, 255, 0.25)';
-        const colorSub2 = 'rgba(255, 0, 122, 0.18)';
-        const colorSub3 = 'rgba(255, 255, 28, 0.12)';
-        // 主線
         const currentWavePoints = [];
-        for (let i = 0; i < Math.ceil(canvas.width * (1 + extensionFactor * 2)); i++) {
+
+        for (let i = 0; i < totalWidth; i++) {
+            // 計算實際x坐標（相對於延伸後的起點）
             const x = i;
-            let y = verticalCenter + generateWavePoint(x, time, horizontalOffset) + verticalShift;
-            if (previousWavePoints[i]) {
+            // 生成波形值，加入水平偏移
+            const waveValue = generateWavePoint(x, time, horizontalOffset);
+            // 計算當前點的 y 坐標
+            let y = verticalCenter + waveValue + verticalShift;
+            // 與前一幀進行平滑過渡
+            if (previousWavePoints[i] !== undefined) {
                 y = previousWavePoints[i] * 0.85 + y * 0.15;
             }
             currentWavePoints[i] = y;
         }
-        // 疊加柔和副線
-        const subWave1 = currentWavePoints.map((y, i) => y + 18 * Math.sin(i * 0.008 + time * 0.7));
-        const subWave2 = currentWavePoints.map((y, i) => y - 12 * Math.cos(i * 0.012 + time * 0.5));
-        const subWave3 = currentWavePoints.map((y, i) => y + 8 * Math.sin(i * 0.02 - time * 0.3));
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        drawSmoothWave(subWave3, colorSub3, 4);
-        drawSmoothWave(subWave2, colorSub2, 3);
-        drawSmoothWave(subWave1, colorSub1, 2);
-        drawSmoothWave(currentWavePoints, colorMain, 2.5, { color: '#00c3ff', blur: 16 });
+
+        // 繪製波浪
+        ctx.save();
+        ctx.strokeStyle = 'rgba(0, 120, 255, 0.85)';
+        ctx.lineWidth = 2.5;
+        ctx.shadowColor = '#00c3ff';
+        ctx.shadowBlur = 8;
+        drawSmoothWave(currentWavePoints);
+        ctx.restore();
+
+        // 保存當前波形作為下一幀的前一幀
         previousWavePoints = [...currentWavePoints];
+
+        // 使用 requestAnimationFrame 以獲得更流暢的動畫
         requestAnimationFrame(drawWave);
     }
 
